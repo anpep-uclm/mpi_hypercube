@@ -249,8 +249,8 @@ int main(int argc, char **argv)
     int num_expected_slots = 1 + (int)powl(2L, dim);
     if (g_size < num_expected_slots) {
         fprintf(stderr,
-            PROGNAME "(%d): error: no enough slots for toroid topology. Got "
-                     "%d when %d processes were expected.\n",
+            PROGNAME "(%d): error: no enough slots for hypercube topology. "
+                     "Got %d when %d processes were expected.\n",
             g_rank, g_size, num_expected_slots);
         MPI_Check(MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE));
         MPI_Check(MPI_Finalize());
