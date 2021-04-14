@@ -1,6 +1,6 @@
 /*
- * mpi_toroid -- Implements a torus-interconnect network topology using OpenMPI
- * Copyright (c) 2021 Ángel Pérez <angel@ttm.sh>
+ * mpi_hypercube -- Implements a hypercube-interconnect network topology using
+ * OpenMPi Copyright (c) 2021 Ángel Pérez <angel@ttm.sh>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,15 +25,15 @@
 #include <string.h>
 #include <unistd.h>
 
-#define PROGNAME "mpi_toroid"
+#define PROGNAME "mpi_hypercube"
 #define DISTRIB_RANK 0
 #define TAG_FINAL_RESULT 42
 
-#define min(a, b)                                                             \
+#define max(a, b)                                                             \
     __extension__({                                                           \
         __typeof(a) _a = a;                                                   \
         __typeof(b) _b = b;                                                   \
-        _a < _b ? _a : _b;                                                    \
+        _a > _b ? _a : _b;                                                    \
     })
 #define MPI_Check(v)                                                          \
     __extension__({                                                           \
@@ -42,8 +42,6 @@
             handle_error(_v, #v);                                             \
     })
 #define logf(f, ...) printf(PROGNAME "(%d): " f "\n", g_rank, ##__VA_ARGS__)
-
-enum { NEIGHBOR_N = 0, NEIGHBOR_S, NEIGHBOR_E, NEIGHBOR_W };
 
 static int g_rank = -1, g_size = -1;
 
@@ -74,11 +72,11 @@ handle_error(int mpi_error, const char *expr)
     _exit(EXIT_FAILURE);
 }
 
-/* Parse the number of sides of the toroid from the command line arguments.
+/* Parse the dimensions of the hypercube from the command line arguments.
  * Returns -1 on failure, parsed value on success
  * @str: String to be parsed
  */
-static int parse_num_sides(char *str)
+static int parse_dimensions(char *str)
 {
     errno = 0;
     char *endptr;
@@ -114,6 +112,7 @@ static void perform_distribution(const char *path)
         fprintf(stderr,
             PROGNAME "(%d): error: could not open file `%s' for reading: %s\n",
             g_rank, path, strerror(errno));
+        MPI_Check(MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE));
         MPI_Check(MPI_Finalize());
         _exit(EXIT_FAILURE);
     }
@@ -166,9 +165,8 @@ static void perform_distribution(const char *path)
 
     if (n < g_size - 1) {
         fprintf(stderr,
-            PROGNAME "(%d): error: invalid number of values on "
-                     "the list. Expected exactly %d but got %d"
-                     ".\n",
+            PROGNAME "(%d): error: invalid number of values on the list. "
+                     "Expected exactly %d but got %d.\n",
             g_rank, g_size - 1, n);
         MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE);
         MPI_Finalize();
@@ -186,19 +184,13 @@ static void perform_distribution(const char *path)
     printf("%lf\n", minimum_value);
 }
 
-static void get_neighbors(int *neighbors, int num_sides)
+static void get_neighbors(int *neighbors, int dim)
 {
-    int c = (g_rank - 1) % num_sides, f = (g_rank - 1) / num_sides;
-    neighbors[NEIGHBOR_N]
-        = f == num_sides - 1 ? g_rank - f * num_sides : g_rank + num_sides;
-    neighbors[NEIGHBOR_S]
-        = f == 0 ? g_rank + (num_sides - 1) * num_sides : g_rank - num_sides;
-    neighbors[NEIGHBOR_E]
-        = c == num_sides - 1 ? g_rank - (num_sides - 1) : g_rank + 1;
-    neighbors[NEIGHBOR_W] = c == 0 ? g_rank + num_sides - 1 : g_rank - 1;
+    for (int i = 0; i < dim; i++)
+        neighbors[i] = 1 + ((g_rank - 1) ^ (1 << i));
 }
 
-static void do_work(int num_sides)
+static void do_work(int dim)
 {
     MPI_Status status;
 
@@ -209,30 +201,18 @@ static void do_work(int num_sides)
     MPI_Check(status.MPI_ERROR);
 
     /* Obtain neighbor processes. */
-    int neighbors[4];
-    get_neighbors(neighbors, num_sides);
+    int neighbors[dim];
+    get_neighbors(neighbors, dim);
 
-    /* Receive value from neighbors. */
+    /* Receive value from neighbor and calculate maximum. */
     double neighbor_val;
-
-    /* South/north */
-    for (int i = 1; i < num_sides; i++) {
-        MPI_Check(MPI_Bsend(&distrib_val, 1, MPI_DOUBLE, neighbors[NEIGHBOR_S],
-            0, MPI_COMM_WORLD));
-        MPI_Recv(&neighbor_val, 1, MPI_DOUBLE, neighbors[NEIGHBOR_N],
-            MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-        MPI_Check(status.MPI_ERROR);
-        distrib_val = min(distrib_val, neighbor_val);
-    }
-
-    /* East/west */
-    for (int i = 1; i < num_sides; i++) {
-        MPI_Check(MPI_Bsend(&distrib_val, 1, MPI_DOUBLE, neighbors[NEIGHBOR_E],
-            0, MPI_COMM_WORLD));
-        MPI_Recv(&neighbor_val, 1, MPI_DOUBLE, neighbors[NEIGHBOR_W], 0,
+    for (int i = 0; i < dim; i++) {
+        MPI_Check(MPI_Bsend(
+            &distrib_val, 1, MPI_DOUBLE, neighbors[i], 0, MPI_COMM_WORLD));
+        MPI_Recv(&neighbor_val, 1, MPI_DOUBLE, neighbors[i], MPI_ANY_TAG,
             MPI_COMM_WORLD, &status);
         MPI_Check(status.MPI_ERROR);
-        distrib_val = min(distrib_val, neighbor_val);
+        distrib_val = max(distrib_val, neighbor_val);
     }
 
     /* Send out the minimum value back to the distributor process. */
@@ -243,7 +223,7 @@ static void do_work(int num_sides)
 int main(int argc, char **argv)
 {
     if (argc != 3) {
-        printf("usage: mpi_toroid NUM_SIDES INPUT_FILE\n\n");
+        printf("usage: mpi_hypercube DIMENSION INPUT_FILE\n\n");
         return EXIT_SUCCESS;
     }
 
@@ -255,22 +235,24 @@ int main(int argc, char **argv)
     MPI_Check(MPI_Comm_rank(MPI_COMM_WORLD, &g_rank));
     MPI_Check(MPI_Comm_size(MPI_COMM_WORLD, &g_size));
 
-    /* Parse and check number of sides for the toroid topology. */
-    int num_sides = parse_num_sides(argv[1]);
-    if (num_sides < 2) {
-        fprintf(stderr, PROGNAME "(%d): error: invalid number of sides (%d)\n",
-            g_rank, num_sides);
+    /* Parse and check dimension for the hypercube topology. */
+    int dim = parse_dimensions(argv[1]);
+    if (dim < 2) {
+        fprintf(stderr, PROGNAME "(%d): error: invalid dimension (%d)\n",
+            g_rank, dim);
+        MPI_Check(MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE));
         MPI_Check(MPI_Finalize());
         return EXIT_FAILURE;
     }
 
     /* Are there enough processes for this topology? */
-    int num_expected_slots = 1 + (int)powl(num_sides, 2L);
+    int num_expected_slots = 1 + (int)powl(2L, dim);
     if (g_size < num_expected_slots) {
         fprintf(stderr,
             PROGNAME "(%d): error: no enough slots for toroid topology. Got "
                      "%d when %d processes were expected.\n",
             g_rank, g_size, num_expected_slots);
+        MPI_Check(MPI_Abort(MPI_COMM_WORLD, EXIT_FAILURE));
         MPI_Check(MPI_Finalize());
         return EXIT_FAILURE;
     }
@@ -279,7 +261,7 @@ int main(int argc, char **argv)
     if (g_rank == DISTRIB_RANK)
         perform_distribution(argv[2]);
     else
-        do_work(num_sides);
+        do_work(dim);
 
     MPI_Check(MPI_Finalize());
     return EXIT_SUCCESS;
